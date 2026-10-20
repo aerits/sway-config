@@ -35,6 +35,15 @@ int read_file_to_int(FILE *fp) {
   return out;
 }
 
+int is_charging() {
+  FILE *fp = fopen("/sys/class/power_supply/BAT0/status", "r");
+  char c;
+  fread(&c, 1, 1, fp);
+  fclose(fp);
+  /* printf("charging: %c", c); */
+  return c == 'C';
+}
+
 // returns true if muted
 int get_volume(char *buffer) {
   FILE *f = popen("wpctl get-volume @DEFAULT_AUDIO_SINK@", "r");
@@ -71,14 +80,31 @@ int main() {
     FILE *power_now = NULL;
     get_file(&power_now, "/sys/class/power_supply/BAT0/power_now");
     int percent_i = read_file_to_int(battery_percent);
-    float remaining_battery_time =
-        (float)read_file_to_int(energy_now) / read_file_to_int(power_now);
+
+    float remaining_battery_time;
+    int is_charging_b = is_charging();
+    if (is_charging_b)
+      remaining_battery_time =
+          (float)read_file_to_int(energy_now) / read_file_to_int(power_now);
+    else {
+
+      FILE *energy_full = NULL;
+      get_file(&energy_full, "/sys/class/power_supply/BAT0/energy_full");
+
+      remaining_battery_time = ((float)read_file_to_int(energy_full) -
+                                (float)read_file_to_int(energy_now)) /
+                               (float)read_file_to_int(power_now);
+
+      remaining_battery_time = 0.0;
+    }
     fclose(battery_percent);
     fclose(energy_now);
     fclose(power_now);
 
     char *battery_emoji;
-    if (percent_i > 20)
+    if (is_charging_b)
+      battery_emoji = "📈";
+    else if (percent_i > 20)
       battery_emoji = "🔋";
     else
       battery_emoji = "🪫";

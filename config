@@ -29,7 +29,7 @@ set $menu fuzzel
 # Default wallpaper (more resolutions are available in /usr/share/backgrounds/sway/)
 # output * bg /usr/share/backgrounds/sway/Sway_Wallpaper_Blue_1920x1080.png fill
 # output * bg /home/diced/Pictures/bg.png fill
-output * bg /home/.config/sway/miku_cinnamoroll.jpg fill
+output * bg ~/.config/sway/miku_cinnamoroll.jpg fill
 # output * bg /home/diced/Pictures/cinnamoroll2.jpg fill
 #
 # Example configuration:
