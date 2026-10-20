@@ -2,9 +2,15 @@
 // minimizes opening new processes
 // minimizes heap allocations
 // likely will segfault on different devices when checking for brightness
+#include <fcntl.h>
+#include <poll.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include <unistd.h>
+
+#include <sys/inotify.h>
 
 // write the current time as a string into the given buffer
 // (at least 23 bytes long)
@@ -47,7 +53,7 @@ int is_charging() {
 // returns true if muted
 int get_volume(char *buffer) {
   FILE *f = popen("wpctl get-volume @DEFAULT_AUDIO_SINK@", "r");
-  int skip_bytes = 8;
+  int skip_bytes = 10;
   char discard[skip_bytes];
   fread(discard, 1, skip_bytes, f);
   fscanf(f, "%s", buffer);
@@ -58,13 +64,13 @@ int get_volume(char *buffer) {
   return next_char != '\n';
 }
 
-int get_notifs() {
-  FILE *f = popen("swaync-client -c", "r");
-  int n;
-  fscanf(f, "%d", &n);
-  pclose(f);
-  return n;
-}
+/* int get_notifs() { */
+/*   FILE *f = popen("swaync-client -c", "r"); */
+/*   int n; */
+/*   fscanf(f, "%d", &n); */
+/*   pclose(f); */
+/*   return n; */
+/* } */
 
 float calculate_average_power(float *powers, int len) {
   float total = 0;
@@ -74,10 +80,24 @@ float calculate_average_power(float *powers, int len) {
   return total / len;
 }
 
+int create_inotifywatch(char *file) {
+  int fd = inotify_init1(0);
+  if (fd == -1) {
+    perror("inotify_init1");
+    exit(1);
+  }
+  int wd = inotify_add_watch(fd, file, IN_MODIFY);
+  if (wd == -1) {
+    perror("inotify_add_watch");
+    exit(1);
+  }
+  return fd;
+}
+
 int main() {
   char vol_buf[5];
   char datetime_buffer[24];
-  int num_powers = 10;
+  int num_powers = 3;
   float powers[num_powers];
   int powers_index = 0;
   {
@@ -89,7 +109,68 @@ int main() {
       powers[i] = power;
   }
 
+  int fd_num = 3;
+  struct pollfd poll_fds[fd_num];
+  {
+    int fds[fd_num];
+    FILE *f = popen("pactl subscribe | grep --line-buffered sink", "r");
+    fds[0] = fileno(f);
+    int flags = fcntl(fds[0], F_GETFL);
+    fcntl(fds[0], F_SETFL, flags & O_NONBLOCK);
+
+    fds[1] =
+        create_inotifywatch("/sys/class/backlight/intel_backlight/brightness");
+    flags = fcntl(fds[1], F_GETFL);
+    if (fcntl(fds[1], F_SETFL, flags & O_NONBLOCK) == -1) {
+      perror("fcntl");
+      exit(1);
+    }
+
+    f = popen("swaync-client -s", "r");
+    fds[2] = fileno(f);
+    flags = fcntl(fds[2], F_GETFL);
+    fcntl(fds[2], F_SETFL, flags & O_NONBLOCK);
+
+    for (int i = 0; i < fd_num; i++) {
+      poll_fds[i] = (struct pollfd){fds[i], POLLIN, 0};
+    }
+  }
+
+  FILE *energy_full = NULL;
+  get_file(&energy_full, "/sys/class/power_supply/BAT0/energy_full");
+  float energy_full_f = (float)read_file_to_int(energy_full);
+  fclose(energy_full);
+
+  FILE *max_brightness = NULL;
+  get_file(&max_brightness,
+           "/sys/class/backlight/intel_backlight/max_brightness");
+  float max_brightness_f = (float)read_file_to_int(max_brightness);
+  fclose(max_brightness);
+
+  int notifs = 0;
+
+  char poll_buffer[4096];
   while (1) {
+    int fds = poll(poll_fds, fd_num, 30 * 1000);
+    if (fds > 0) {
+      for (int i = 0; fds > 0 && i < fd_num; i++) {
+        struct pollfd *cur = &poll_fds[i];
+        if (cur->revents & POLLIN) {
+          int len = read(cur->fd, poll_buffer, sizeof(poll_buffer));
+          if (len == -1) {
+            perror("poll");
+            exit(1);
+          }
+          if (i == 2) {
+            // notif
+            char *num = poll_buffer + 11;
+            notifs = atof(num);
+          }
+        }
+      }
+    } else if (fds == -1) {
+      continue;
+    }
 
     FILE *battery_percent = NULL;
     get_file(&battery_percent, "/sys/class/power_supply/BAT0/capacity");
@@ -110,13 +191,8 @@ int main() {
       remaining_battery_time =
           (float)read_file_to_int(energy_now) / power_now_f;
     else {
-
-      FILE *energy_full = NULL;
-      get_file(&energy_full, "/sys/class/power_supply/BAT0/energy_full");
-
-      remaining_battery_time = ((float)read_file_to_int(energy_full) -
-                                (float)read_file_to_int(energy_now)) /
-                               power_now_f;
+      remaining_battery_time =
+          (energy_full_f - (float)read_file_to_int(energy_now)) / power_now_f;
     }
     fclose(battery_percent);
     fclose(energy_now);
@@ -130,18 +206,12 @@ int main() {
     else
       battery_emoji = "🪫";
 
-    // cant just reuse the same file descriptor for brightness ig
     FILE *actual_brightness = NULL;
     get_file(&actual_brightness,
-             "/sys/class/backlight/intel_backlight/actual_brightness");
-    FILE *max_brightness = NULL;
-    get_file(&max_brightness,
-             "/sys/class/backlight/intel_backlight/max_brightness");
+             "/sys/class/backlight/intel_backlight/brightness");
     int actual_brightness_i = read_file_to_int(actual_brightness);
-    int max_brightness_i = read_file_to_int(max_brightness);
-    float brightness = (float)actual_brightness_i / max_brightness_i * 100;
+    float brightness = (float)actual_brightness_i / max_brightness_f * 100;
     fclose(actual_brightness);
-    fclose(max_brightness);
 
     int muted = get_volume(vol_buf);
     char *vol_emoji;
@@ -150,7 +220,7 @@ int main() {
     else
       vol_emoji = "🙊";
 
-    int notifs = get_notifs();
+    /* int notifs = get_notifs(); */
 
     get_time(datetime_buffer);
 
@@ -160,10 +230,9 @@ int main() {
              remaining_battery_time, battery_emoji, brightness, vol_buf,
              vol_emoji, datetime_buffer);
     else
-      printf("%d 🔔 | %d%% / %.2f hrs %s | %.1f%% ☀️ | %s%% %s | %s\n", notifs,
+      printf("%d 🔔 | %d%% / %.2f hrs %s | %.0f%% ☀️ | %s%% %s | %s\n", notifs,
              percent_i, remaining_battery_time, battery_emoji, brightness,
              vol_buf, vol_emoji, datetime_buffer);
     fflush(stdout);
-    sleep(1);
   }
 }
