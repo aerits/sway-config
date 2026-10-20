@@ -149,7 +149,14 @@ int main() {
 
   int notifs = 0;
 
+  int percent_i;
+  float remaining_battery_time;
+  char *battery_emoji;
+  float brightness;
+  char *vol_emoji;
+
   char poll_buffer[4096];
+  goto recalculate;
   while (1) {
   restart:;
     int fds = poll(poll_fds, fd_num, 30 * 1000);
@@ -167,6 +174,10 @@ int main() {
             if (strstr(poll_buffer, "sink") == NULL) {
               goto restart;
             }
+            goto get_vol_or_bright;
+          } else if (i == 1) {
+            // file watch brightness
+            goto get_vol_or_bright;
           } else if (i == 2) {
             // notif
             char *num = poll_buffer + 11;
@@ -177,59 +188,56 @@ int main() {
       }
     } else if (fds == -1) {
       continue;
+    } else { // recalculate
+    recalculate:;
+      FILE *battery_percent = NULL;
+      get_file(&battery_percent, "/sys/class/power_supply/BAT0/capacity");
+      FILE *energy_now = NULL;
+      get_file(&energy_now, "/sys/class/power_supply/BAT0/energy_now");
+      FILE *power_now = NULL;
+      get_file(&power_now, "/sys/class/power_supply/BAT0/power_now");
+      percent_i = read_file_to_int(battery_percent);
+
+      float power_now_f = read_file_to_int(power_now);
+      powers[powers_index] = power_now_f;
+      powers_index = (powers_index + 1) % (num_powers - 1);
+      power_now_f = calculate_average_power(powers, num_powers);
+
+      int is_charging_b = is_charging();
+      if (!is_charging_b)
+        remaining_battery_time =
+            (float)read_file_to_int(energy_now) / power_now_f;
+      else {
+        remaining_battery_time =
+            (energy_full_f - (float)read_file_to_int(energy_now)) / power_now_f;
+      }
+      fclose(battery_percent);
+      fclose(energy_now);
+      fclose(power_now);
+
+      if (is_charging_b)
+        battery_emoji = "📈";
+      else if (percent_i > 20)
+        battery_emoji = "🔋";
+      else
+        battery_emoji = "🪫";
+
+      get_time(datetime_buffer);
+
+    get_vol_or_bright:;
+      FILE *actual_brightness = NULL;
+      get_file(&actual_brightness,
+               "/sys/class/backlight/intel_backlight/brightness");
+      int actual_brightness_i = read_file_to_int(actual_brightness);
+      brightness = (float)actual_brightness_i / max_brightness_f * 100;
+      fclose(actual_brightness);
+
+      int muted = get_volume(vol_buf);
+      if (!muted)
+        vol_emoji = "🗣️";
+      else
+        vol_emoji = "🙊";
     }
-
-    FILE *battery_percent = NULL;
-    get_file(&battery_percent, "/sys/class/power_supply/BAT0/capacity");
-    FILE *energy_now = NULL;
-    get_file(&energy_now, "/sys/class/power_supply/BAT0/energy_now");
-    FILE *power_now = NULL;
-    get_file(&power_now, "/sys/class/power_supply/BAT0/power_now");
-    int percent_i = read_file_to_int(battery_percent);
-
-    float power_now_f = read_file_to_int(power_now);
-    powers[powers_index] = power_now_f;
-    powers_index = (powers_index + 1) % (num_powers - 1);
-    power_now_f = calculate_average_power(powers, num_powers);
-
-    float remaining_battery_time;
-    int is_charging_b = is_charging();
-    if (!is_charging_b)
-      remaining_battery_time =
-          (float)read_file_to_int(energy_now) / power_now_f;
-    else {
-      remaining_battery_time =
-          (energy_full_f - (float)read_file_to_int(energy_now)) / power_now_f;
-    }
-    fclose(battery_percent);
-    fclose(energy_now);
-    fclose(power_now);
-
-    char *battery_emoji;
-    if (is_charging_b)
-      battery_emoji = "📈";
-    else if (percent_i > 20)
-      battery_emoji = "🔋";
-    else
-      battery_emoji = "🪫";
-
-    FILE *actual_brightness = NULL;
-    get_file(&actual_brightness,
-             "/sys/class/backlight/intel_backlight/brightness");
-    int actual_brightness_i = read_file_to_int(actual_brightness);
-    float brightness = (float)actual_brightness_i / max_brightness_f * 100;
-    fclose(actual_brightness);
-
-    int muted = get_volume(vol_buf);
-    char *vol_emoji;
-    if (!muted)
-      vol_emoji = "🗣️";
-    else
-      vol_emoji = "🙊";
-
-    /* int notifs = get_notifs(); */
-
-    get_time(datetime_buffer);
 
     if (notifs == 0)
       printf("%d%% / %.2f hrs %s | %.1f%% ☀️ | %s%% %s | %s\n", percent_i,
