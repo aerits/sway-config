@@ -2,7 +2,7 @@
 
 ## setup
 ```bash
-gcc -O3 a.c
+make
 ```
 
 ## required

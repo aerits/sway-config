@@ -11,7 +11,7 @@
 void get_time(char *buffer) {
   time_t now = time(NULL);
   struct tm *t = localtime(&now);
-  strftime(buffer, 23, "%a %Y-%m-%d %I:%M %p", t);
+  strftime(buffer, 24, "%a %Y-%m-%d %I:%M %p", t);
 }
 
 int get_file(FILE **fp, char *file) {
@@ -51,7 +51,6 @@ int get_volume(char *buffer) {
   char discard[skip_bytes];
   fread(discard, 1, skip_bytes, f);
   fscanf(f, "%s", buffer);
-  int fd = fileno(f);
 
   char next_char = '\0';
   fread(&next_char, 1, 1, f);
@@ -67,9 +66,28 @@ int get_notifs() {
   return n;
 }
 
+float calculate_average_power(float *powers, int len) {
+  float total = 0;
+  for (int i = len - 1; i >= 0; --i) {
+    total += powers[i];
+  }
+  return total / len;
+}
+
 int main() {
   char vol_buf[5];
   char datetime_buffer[24];
+  int num_powers = 10;
+  float powers[num_powers];
+  int powers_index = 0;
+  {
+    FILE *power_now = NULL;
+    get_file(&power_now, "/sys/class/power_supply/BAT0/power_now");
+    float power = read_file_to_int(power_now);
+    fclose(power_now);
+    for (int i = num_powers - 1; i > 0; --i)
+      powers[i] = power;
+  }
 
   while (1) {
 
@@ -81,11 +99,16 @@ int main() {
     get_file(&power_now, "/sys/class/power_supply/BAT0/power_now");
     int percent_i = read_file_to_int(battery_percent);
 
+    float power_now_f = read_file_to_int(power_now);
+    powers[powers_index] = power_now_f;
+    powers_index = (powers_index + 1) % (num_powers - 1);
+    power_now_f = calculate_average_power(powers, num_powers);
+
     float remaining_battery_time;
     int is_charging_b = is_charging();
     if (!is_charging_b)
       remaining_battery_time =
-          (float)read_file_to_int(energy_now) / read_file_to_int(power_now);
+          (float)read_file_to_int(energy_now) / power_now_f;
     else {
 
       FILE *energy_full = NULL;
@@ -93,7 +116,7 @@ int main() {
 
       remaining_battery_time = ((float)read_file_to_int(energy_full) -
                                 (float)read_file_to_int(energy_now)) /
-                               (float)read_file_to_int(power_now);
+                               power_now_f;
     }
     fclose(battery_percent);
     fclose(energy_now);
