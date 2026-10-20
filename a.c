@@ -113,7 +113,7 @@ int main() {
   struct pollfd poll_fds[fd_num];
   {
     int fds[fd_num];
-    FILE *f = popen("pactl subscribe | grep --line-buffered sink", "r");
+    FILE *f = popen("pactl subscribe", "r");
     fds[0] = fileno(f);
     int flags = fcntl(fds[0], F_GETFL);
     fcntl(fds[0], F_SETFL, flags & O_NONBLOCK);
@@ -151,6 +151,7 @@ int main() {
 
   char poll_buffer[4096];
   while (1) {
+  restart:;
     int fds = poll(poll_fds, fd_num, 30 * 1000);
     if (fds > 0) {
       for (int i = 0; fds > 0 && i < fd_num; i++) {
@@ -161,11 +162,17 @@ int main() {
             perror("poll");
             exit(1);
           }
-          if (i == 2) {
+          if (i == 0) {
+            // pactl
+            if (strstr(poll_buffer, "sink") == NULL) {
+              goto restart;
+            }
+          } else if (i == 2) {
             // notif
             char *num = poll_buffer + 11;
             notifs = atof(num);
           }
+          break;
         }
       }
     } else if (fds == -1) {
