@@ -83,7 +83,7 @@ int main() {
 
     float remaining_battery_time;
     int is_charging_b = is_charging();
-    if (is_charging_b)
+    if (!is_charging_b)
       remaining_battery_time =
           (float)read_file_to_int(energy_now) / read_file_to_int(power_now);
     else {
@@ -94,8 +94,6 @@ int main() {
       remaining_battery_time = ((float)read_file_to_int(energy_full) -
                                 (float)read_file_to_int(energy_now)) /
                                (float)read_file_to_int(power_now);
-
-      remaining_battery_time = 0.0;
     }
     fclose(battery_percent);
     fclose(energy_now);
